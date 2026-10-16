@@ -1,49 +1,87 @@
 # Song Tokenisation
 
-A Solidity smart contract for fractional ownership of songs, plus a notebook exploring
-live Bitcoin blockchain data. Built for the DAS5003 Blockchain Fundamentals module.
+A Solidity smart contract for fractional ownership of songs, tested with Foundry, plus a
+notebook exploring live Bitcoin blockchain data. Built for the DAS5003 Blockchain
+Fundamentals module.
 
-## Smart contract — `SongTokenisation.sol`
+## Smart contract — `src/SongTokenisation.sol`
 
-Each song is split into a fixed number of shares. Fans buy shares with ETH, the payment
-goes straight to the song's rights holder, and ownership is tracked on-chain.
+Each song is split into a fixed number of shares. Fans buy shares with ETH, can transfer
+them to others, and can sell them back while the song is active.
 
-**Features**
+### How money flows
 
-- `createSong` — owner registers a song with title, artist, total shares, price per share
-  and rights-holder address; all shares start with the rights holder
-- `buySongShares` — buy shares for the exact ETH amount; payment is forwarded to the
-  rights holder
-- `transferSongShares` — move shares between addresses
-- `sellSongShares` — sell shares back at the original price, paid from the contract
-  balance (topped up by the owner via `fundContract`)
-- `deactivateSong` — owner can stop trading for a song
-- Events for every state change (`SongCreated`, `SongSharesPurchased`, `SongSharesTransferred`,
-  `SongSharesSold`, `SongDeactivated`)
+```
+fan ──buy──▶ shares from buy-back pool first ──▶ ETH refills the song's buy-back reserve
+         └─▶ remaining shares from rights holder ─▶ ETH credited to rights holder (withdraw())
 
-**Analytics (view functions)**
+fan ──sell─▶ shares go to the buy-back pool ◀── ETH paid from the song's buy-back reserve
+                                                 (funded by the owner via fundBuyback())
+```
 
-- `getTotalAssetsCreated` — number of tokenised songs
-- `getAssetOwners` — current holders of a song and their share counts
-- `getTop10Beneficiaries` — top 10 holders with ownership percentage (2-decimal precision,
-  e.g. `5000` = 50.00%)
-- `getSongDetails`, `getSharesOwned`, `getAllSongs`, `getContractBalance`
+- **Primary sales** are credited to the rights holder and collected with `withdraw()`
+  (pull payments), so a smart-contract wallet such as a multisig can be a rights holder.
+- **Buy-back** is backed by a per-song reserve that the owner funds and can withdraw.
+  Bought-back shares sit in a contract-held pool and are resold first; their proceeds go
+  back into the reserve, so the same shares are never paid to the rights holder twice.
+- **Accounting invariant:** the contract balance always equals the sum of buy-back
+  reserves plus pending withdrawals.
 
-`getSongDetails` returns a `SongDetails` struct instead of eight separate values to avoid the
-EVM "Stack too deep" compiler error.
+### Functions
 
-**Running**
+| Function | Who | Purpose |
+|---|---|---|
+| `createSong` | owner | Register a song; all shares start with the rights holder |
+| `buySongShares` | anyone | Buy shares for exactly `price × amount` |
+| `transferSongShares` | holder | Move shares to another address |
+| `sellSongShares` | holder (not rights holder) | Sell shares back from the reserve |
+| `withdraw` | rights holder | Collect earnings from primary sales |
+| `fundBuyback` / `withdrawBuybackReserve` | owner | Manage a song's buy-back reserve |
+| `deactivateSong` | owner | Stop buying and selling for a song |
+| `transferOwnership` | owner | Hand over contract ownership |
 
-Open the contract in [Remix IDE](https://remix.ethereum.org), compile with Solidity `^0.8.0`
-and deploy to the Remix VM or a testnet. The deploying account becomes the owner.
+**Analytics:** `getTotalAssetsCreated`, `getAssetOwners`, `getTop10Beneficiaries`
+(ownership in basis points, `5000` = 50.00%), `getSongDetails`, `getSharesOwned`,
+`getAllSongs`, `getContractBalance`.
 
-**Known limitations**
+## Security review
 
-- Top-10 ranking uses an in-memory bubble sort over all holders — fine for small holder
-  lists, but gas cost grows quadratically.
-- Payouts use `transfer`, which forwards a fixed 2300 gas and can fail for contract
-  recipients; `call` with a reentrancy guard would be more robust.
-- `sellSongShares` does not check whether the song is still active.
+The first version of the contract (kept in `test/legacy/` for reference) had four issues.
+Each one is reproduced by a proof-of-concept test against V1 and covered by a regression
+test against the current version.
+
+| Issue in V1 | Impact | Fix |
+|---|---|---|
+| Rights holder could call `sellSongShares`; shares moved from them back to themselves | **Critical:** rights holder drains the whole contract balance without losing shares | Rights holder can't sell back; bought-back shares go to a contract pool |
+| Bought-back shares returned to the rights holder and could be resold | Each buy/sell round trip moved funder money to the rights holder | Pool shares are sold first and refill the reserve; reserve is per song |
+| Payments used `transfer` (2300 gas) | Purchases always revert if the rights holder is a smart-contract wallet | Pull payments with `call` and a reentrancy guard |
+| `sellSongShares` ignored `active` | Trading continued after a song was deactivated | `active` check on sell |
+
+Also added: `indexed` event parameters, `transferOwnership`, withdrawal of unused reserve,
+a pinned compiler version, and an O(10·n) top-10 selection instead of a full O(n²) sort.
+
+## Tests
+
+```bash
+forge install   # fetches forge-std
+forge test
+```
+
+| Suite | What it checks |
+|---|---|
+| `test/SongTokenisation.t.sol` | Unit tests for every function, regression tests for the V1 issues, reentrancy, fuzz tests for round trips and share conservation |
+| `test/Invariant.t.sol` | Random sequences of buy / sell / transfer / fund / withdraw (1,000 runs × 500 calls): balance always matches accounting, total shares always conserved |
+| `test/legacy/ExploitV1.t.sol` | Proof-of-concept exploits against the original contract (these pass, showing the attacks work on V1) |
+
+32 tests pass; line coverage of `SongTokenisation.sol` is 98.6%.
+
+### Known limitations
+
+- `getAssetOwners`, `getTop10Beneficiaries` and `getAllSongs` loop over all holders /
+  songs. They are view functions, but very large lists can still exceed RPC gas limits;
+  an indexer (e.g. The Graph) reading the events would be the production approach.
+- Shares are tracked in plain mappings rather than a token standard; ERC-1155 would make
+  them visible in wallets and tradable on marketplaces.
 
 ## Notebook — `blockchain_data_analysis.ipynb`
 
@@ -64,6 +102,16 @@ Results reflect the chain state at the time of analysis (7 December 2025, block 
 ```bash
 pip install requests jupyter
 jupyter notebook blockchain_data_analysis.ipynb
+```
+
+## Project structure
+
+```
+src/SongTokenisation.sol          contract
+test/SongTokenisation.t.sol       unit, regression and fuzz tests
+test/Invariant.t.sol              invariant tests
+test/legacy/                      original V1 contract and exploit PoCs
+blockchain_data_analysis.ipynb    Bitcoin data analysis
 ```
 
 ## Author
