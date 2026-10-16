@@ -17,7 +17,7 @@ pragma solidity ^0.8.0;
     - See who owns the most shares (top 10)
 */
 
-contract SongTokenisation {
+contract SongTokenisationV1 {
 
     // The account that deployed this contract
     address public owner;
