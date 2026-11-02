@@ -4,6 +4,38 @@ A Solidity smart contract for fractional ownership of songs, tested with Foundry
 notebook exploring live Bitcoin blockchain data. Built for the DAS5003 Blockchain
 Fundamentals module.
 
+## The problem
+
+Independent artists have few ways to raise money from their own fans, and fans have no way to
+own a share of the music they support. Contracts that handle real money are risky: one logic
+error can let someone drain all the funds.
+
+## Who it's for
+
+Independent musicians and rights holders, fans who want to invest in songs, and music-tech or
+Web3 teams that need a fractional-ownership model they can audit.
+
+## What it does
+
+Each song is split into shares that fans buy with ETH. Fans can trade the shares and sell them
+back from a reserve that is funded separately. Earnings go to the rights holder, and the contract
+balance always matches the money it owes.
+
+## Key results
+
+- **Found and fixed 4 vulnerabilities in V1**, including **1 critical**: the rights holder could
+  drain the whole contract balance without losing any shares. Each issue has a working
+  proof-of-concept exploit and a regression test.
+- **32 tests pass** with **98.6% line coverage** of the contract.
+- **Invariant testing: 1,000 runs × 500 random calls.** The balance always matched the
+  accounting and the total number of shares never changed.
+- Top-10 ranking now runs in **O(10·n) instead of O(n²)**.
+- The Bitcoin notebook analyses live chain data (block 926,904, 7 December 2025).
+
+**Stack:** Solidity, Foundry (unit, fuzz and invariant tests), Python, blockchain.info API
+
+---
+
 ## Smart contract — `src/SongTokenisation.sol`
 
 Each song is split into a fixed number of shares. Fans buy shares with ETH, can transfer
